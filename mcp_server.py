@@ -400,8 +400,10 @@ def _article_text(article_id: str, *, allow_fetch: bool = True,
     cache_file = CACHE_DIR / f"{article_id}.txt"
     if cache_file.exists():
         text = cache_file.read_text(encoding="utf-8")
-        if not (len(text) == _LEGACY_CACHE_CHARS and want_chars > _LEGACY_CACHE_CHARS
-                and allow_fetch):
+        if not text.strip():
+            text = ""          # empty file (blocked fetch) → treat as not cached
+        elif not (len(text) == _LEGACY_CACHE_CHARS and want_chars > _LEGACY_CACHE_CHARS
+                  and allow_fetch):
             return text, True, None
     if not allow_fetch:
         return None, False, "not cached"
@@ -1564,7 +1566,11 @@ def _render_digest_html(stats: dict, alert_topics: list[str] | None,
              f"{stats.get('clusters_in_window', '?')} событиях · "
              f"источников активно: {stats.get('sources_active', '?')}</i></p>")
     if alert_topics:
-        h.append(f"<p>🚨 <b>За сутки было {len(alert_topics)} срочных алертов:</b> "
+        n = len(alert_topics)
+        word = ("был 1 срочный алерт" if n == 1 else
+                f"было {n} срочных алерта" if 2 <= n <= 4 else
+                f"было {n} срочных алертов")
+        h.append(f"<p>🚨 <b>За сутки {word}:</b> "
                  f"{', '.join(alert_topics)}. Подробности — в чате выше.</p>")
     h.append("<h4>📌 В этом выпуске</h4>")
     for anchor, label, items in (("Baltic", "🇪🇪 Эстония и Финляндия", baltic),
@@ -1675,6 +1681,17 @@ def publish_digest(
             "main_post": _render_main_post(date_label, baltic, world, tech,
                                            "https://telegra.ph/DRY-RUN"),
         }
+    # Unresolvable placeholders (a cluster/twin id used as an article id, or
+    # an article that left the window) must not reach the page as
+    # «[?art_…]» (05.09.2026: twice on the published page). Strip them,
+    # keep the text, report in the tech log.
+    _resolved_probe, unresolved = _resolve_placeholders(html, html=True)
+    if unresolved:
+        for bad in set(unresolved):
+            html = re.sub(r"\s*·\s*\[\[" + re.escape(bad) + r"\]\]", "", html)
+            html = re.sub(r"\s*\[\[" + re.escape(bad) + r"\]\]", "", html)
+        html = re.sub(r"Источники:\s*</p>", "</p>", html)
+        _save_run_cache({"unresolved_placeholders": sorted(set(unresolved))})
     published = _publish_telegraph_html(title, html)
     if published.get("error"):
         return published
@@ -1756,6 +1773,9 @@ def _finish_digest(page_url: str, channel_msg_id: int | None,
     ]
     if out.get("comment", {}).get("error"):
         log_lines.append(f"⚠ Комментарий-методология не отправлен: {out['comment']['error']}")
+    if bad := cache.get("unresolved_placeholders"):
+        log_lines.append("⚠ Вырезаны нерезолвящиеся плейсхолдеры (не article_id или статья вне "
+                         f"окна): {', '.join(bad)}")
     if log_extra:
         log_lines.append(log_extra.strip())
     log = _send_telegram_text(_md_to_html_basic("\n".join(log_lines)), target="log",
@@ -2018,7 +2038,9 @@ def reader_packet(
 
     twins: list[dict] = []
     twins_missing: list[str] = []
-    for t in twin_ids or []:
+    READER_MAX_TWINS = 5
+    twins_ignored = list(twin_ids or [])[READER_MAX_TWINS:]
+    for t in (twin_ids or [])[:READER_MAX_TWINS]:
         c, _how = _find_cluster(t, data)
         if c is None:
             twins_missing.append(t)
@@ -2072,6 +2094,7 @@ def reader_packet(
                      "last_ts", "storyline_id")},
         "twins_included": [t.get("id") for t in twins],
         "twins_missing": twins_missing,
+        "twins_ignored": twins_ignored,
         "resolved_via": how,
         "related_candidates": related,
         "articles_total": len(articles),
