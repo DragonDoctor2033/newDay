@@ -26,9 +26,13 @@ D:\newDay\
 │   ├── digest.md        ← промпт для дайджеста (раз в сутки)
 │   └── reader.md        ← промпт читателя-сабагента (Sonnet), один сюжет
 ├── scripts\
-│   ├── run-fetcher.ps1  ← cron каждые 15-30 мин (fetcher + clusterer)
-│   ├── run-watchman.ps1 ← cron раз в час
-│   └── run-digest.ps1   ← cron раз в сутки
+│   ├── run-fetcher.ps1            ← каждые 15 мин (fetcher + clusterer)
+│   ├── run-watchman.ps1           ← раз в час (ночью реже)
+│   ├── run-mcp-http.ps1           ← MCP-сервер по HTTP, с логона, в цикле
+│   ├── run-tunnel.ps1             ← cloudflared-туннель к нему, с логона, в цикле
+│   ├── run-feedback-collector.ps1 ← каждые 15 мин, без LLM
+│   ├── run-digest.ps1             ← заглушка: дайджест переехал в задачу CC-Desktop
+│   └── sync-digest-skill.py       ← собирает SKILL.md задачи дайджеста из prompts/digest.md
 ├── experiments\         ← лаборатория кластеризации (cluster_lab.py)
 ├── cache\               ← кеш read_full + embeddings.npz
 └── logs\                ← логи запусков
@@ -121,9 +125,10 @@ cd D:\newDay
 
 ## 6. Тестовый прогон digest
 
-```powershell
-.\scripts\run-digest.ps1
-```
+Дайджест живёт не в Task Scheduler, а в задаче Claude Desktop (см. §7);
+`scripts\run-digest.ps1` — заглушка, которая только пишет строку в
+`logs\digest-migrated.log`. Тестовый прогон — кнопка «Run now» у задачи
+в Code-табе → Routines.
 
 Что должно произойти (пайплайн с 02.09.2026 — механика на сервере):
 - digest_context + digest_baltic_extra → карта суток по кластерам,
@@ -158,36 +163,68 @@ fallback. Серверные тесты: `.venv/Scripts/python.exe scripts/test_
 - Якори #Baltic / #World / #Tech кликаются
 - Все ссылки рабочие (потому что они теперь не из памяти LLM)
 
-## 7. Регистрация в Task Scheduler
+## 7. Регистрация задач
 
-После того как всё работает руками — настрой автозапуск.
+Актуально на 05.09.2026. Всего шесть задач в Task Scheduler и одна в Claude
+Desktop; ниже — что реально зарегистрировано, а не «как задумывалось».
 
-Открой Task Scheduler (Планировщик задач).
+### Task Scheduler (пять рабочих задач + заглушка)
 
-### Задача 1: News Fetcher
+Общее для всех: пользователь `docto`, «Run whether user is logged on or
+not» (хранится пароль), **обычные** права (не highest), «If the task is
+already running → Do not start a new instance». Ни у одной нет автоперезапуска
+при падении: периодические просто ждут следующего тика, серверные крутятся
+в бесконечном цикле внутри своего .ps1.
 
-- General → Name: `NewsAgent-Fetcher`
-- Run whether user is logged on or not
-- Run with highest privileges
-- Triggers → New → Daily, recur every 1 day, repeat task every 15 min for 1 day
-- Actions → New → Start a program
-  - Program: `powershell.exe`
-  - Arguments: `-NoProfile -ExecutionPolicy Bypass -File "D:\newDay\scripts\run-fetcher.ps1"`
-- Conditions → uncheck «Start the task only if the computer is on AC power»
-- Settings → Allow task to be run on demand · If task fails, restart every 5 min × 3
+| Задача | Триггер | Действие | Заметки |
+|---|---|---|---|
+| `Claude News Fetcher` | каждые 15 мин, с 08:07:45 | `powershell.exe -file "D:\newDay\scripts\run-fetcher.ps1"` | fetcher + clusterer; «only on AC» включён, «Run task as soon as possible after a scheduled start is missed» включён; лимит 72 ч |
+| `Claude Urgent News` | каждый час, с 09:00 | `powershell.exe -file "D:\newDay\scripts\run-watchman.ps1"` | watchman; ночное прореживание (01–07 только 03:00 и 06:00) — внутри скрипта, триггер об этом не знает; лимит 72 ч |
+| `Claude News MCP HTTP` | при логоне | `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File D:\newDay\scripts\run-mcp-http.ps1` | `mcp_server.py --http` на 127.0.0.1:8787 с bearer-токеном; цикл перезапускает через 10 с после падения; лимит времени снят (PT0S) |
+| `Claude News Tunnel` | при логоне | `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File D:\newDay\scripts\run-tunnel.ps1` | `bin\cloudflared.exe tunnel run news-mcp` по `cloudflared.yml`; тот же цикл; лимит снят |
+| `newsday-feedback-collector` | каждые 15 мин, с 18:08 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\newDay\scripts\run-feedback-collector.ps1` | `feedback_collector.py`: реплаи из группы обсуждений → `feedback_log.json`; без LLM; лимит 72 ч |
+| `Claude Daily Digest` | ежедневно 09:00 | `powershell.exe -file "D:\newDay\scripts\run-digest.ps1"` | **заглушка**, скрипт сразу выходит с записью в `logs\digest-migrated.log`; удалить из консоли администратора: `schtasks /Delete /TN "Claude Daily Digest" /F` (из обычной сессии — Access is denied) |
 
-### Задача 2: News Watchman
+Проверить всё разом:
 
-То же самое, но:
-- Name: `NewsAgent-Watchman`
-- Trigger: Daily, repeat every 1 hour for 1 day
-- Arguments: `-NoProfile -ExecutionPolicy Bypass -File "D:\newDay\scripts\run-watchman.ps1"`
+```powershell
+Get-ScheduledTask | Where-Object { $_.TaskName -match 'Claude|newsday' } |
+  ForEach-Object { $i = $_ | Get-ScheduledTaskInfo
+    [pscustomobject]@{ Task=$_.TaskName; State=$_.State; LastRun=$i.LastRunTime;
+                       Result=$i.LastTaskResult; Next=$i.NextRunTime } } | Format-Table -AutoSize
+```
 
-### Задача 3: News Digest
+Result `0` — нормальный выход, `267009` (0x41301) — «ещё выполняется», для
+двух серверных задач это штатное состояние.
 
-- Name: `NewsAgent-Digest`
-- Trigger: Daily at 09:00
-- Arguments: `-NoProfile -ExecutionPolicy Bypass -File "D:\newDay\scripts\run-digest.ps1"`
+Рестарт MCP-сервера после правки `mcp_server.py` (туннель трогать не нужно):
+
+```powershell
+Stop-ScheduledTask "Claude News MCP HTTP"; Start-ScheduledTask "Claude News MCP HTTP"
+```
+
+Зарегистрировать задачу заново, если планировщик чистый: Task Scheduler →
+Create Task, имя и триггер из таблицы, Action → Start a program →
+`powershell.exe` с аргументами из таблицы, Settings → «Allow task to be run
+on demand», для серверных задач снять «Stop the task if it runs longer than».
+
+### Claude Desktop (дайджест)
+
+Дайджест — scheduled task самого Claude Desktop (Code-таб → Routines), а не
+Task Scheduler: cron `8 9 * * *` (09:08 по местному; «09:00» в тексте —
+округление), запускается как обычная сессия Claude Code с cwd `D:\newDay`,
+permissionMode `auto`, и его прогоны видны в списке сессий.
+
+- Промпт задачи — `%USERPROFILE%\.claude\scheduled-tasks\newday-watchman\SKILL.md`
+  (имя каталога историческое). Он собирается из `prompts\digest.md` скриптом
+  `python scripts\sync-digest-skill.py`; править исходник, потом запустить
+  скрипт, руками SKILL.md не трогать.
+- Реестр задач —
+  `%APPDATA%\Claude\claude-code-sessions\<account>\<session>\scheduled-tasks.json`;
+  там же поле `model` (сейчас `claude-opus-5`) и список одобренных тулов
+  (`approvedPermissions`); effort — `effortLevel` в `D:\newDay\.claude\settings.json`.
+- Реестр живёт в профиле приложения: переустановка Claude Desktop его
+  стирает, SKILL.md при этом остаётся — задачу придётся создать заново.
 
 ## 8. Переключение в боевой режим
 
