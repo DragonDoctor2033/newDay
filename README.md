@@ -7,7 +7,8 @@
 
 ```
 D:\newDay\
-├── config.json          ← секреты и настройки
+├── config.json          ← секреты и настройки (в git не попадает)
+├── config.example.json  ← шаблон config.json без секретов
 ├── sources.txt          ← RSS-источники
 ├── inbox.json           ← fetcher пишет, MCP читает
 ├── clusters.json        ← clusterer пишет, MCP читает (событийные кластеры)
@@ -15,6 +16,7 @@ D:\newDay\
 ├── archive.jsonl        ← новости старше 72 часов
 ├── fetch_errors.json    ← последний отчёт фетчера
 ├── fetcher.py           ← парсер RSS
+├── doh.py               ← DNS-over-HTTPS шим для fetcher (опционально)
 ├── clusterer.py         ← событийная кластеризация (эмбеддинги, CPU-only)
 ├── mcp_server.py        ← FastMCP сервер
 ├── requirements.txt
@@ -46,7 +48,7 @@ python --version
 
 ## 2. Заполни config.json
 
-Открой `D:\newDay\config.json` и заполни:
+Скопируй `config.example.json` в `config.json` и заполни:
 
 - `tg_bot_token` — от @BotFather
 - `tg_chat_id` — основной канал «News Claude»
@@ -59,7 +61,16 @@ python --version
   ```
   В ответе будет `access_token` — его сюда.
 
+- `mcp_bearer_token` — любая длинная случайная строка; её ждёт HTTP-режим
+  MCP-сервера (`scripts/run-mcp-http.ps1`) от облачных рутин
+- `doh_resolver_url` — (опционально) URL DoH-резолвера вида
+  `https://host/dns-query`. Если задан, fetcher резолвит все хосты через него
+  в обход системного DNS (помогает при DNS-блокировках провайдера). Пусто —
+  DoH выключен, используется системный DNS. Можно задать и переменной
+  окружения `NEWS_DOH_URL`, она имеет приоритет над config.json.
 - `test_mode: true` — пока тестируем, потом переключим в false
+
+`config.json` в `.gitignore` — токены в репозиторий не уходят.
 
 ## 3. Первый прогон fetcher вручную
 
@@ -72,6 +83,8 @@ python fetcher.py
 - `inbox.json` с массивом статей
 - `fetch_errors.json` с отчётом
 - В консоли — `+N` для каждого источника
+- В начале лога — `DoH active (all hosts via ...)` если резолвер задан,
+  иначе `DoH unavailable — falling back to system DNS` (это нормально)
 
 Если какие-то источники постоянно дают ошибку — закомментируй их в
 `sources.txt` (поставь `#` в начале строки) или замени URL.
