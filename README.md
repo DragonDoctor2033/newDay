@@ -281,6 +281,3 @@ usage из транскриптов сессий (~/.claude/projects/D--newDay/*
 
 - Добавить парсинг HTML-источников без RSS (через BeautifulSoup в fetcher.py)
 - Добавить tool `search_news(query, lang)` в MCP — поиск по inbox+archive
-- Добавить tool `web_search(query)` в MCP — официальный поиск через
-  встроенный Anthropic search или внешний API
-- Свой systemd-style сервис вместо отдельных тасков — пока избыточно
