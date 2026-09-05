@@ -226,6 +226,28 @@ def append_archive(path: Path, articles: list[dict]) -> None:
             f.write(json.dumps(a, ensure_ascii=False) + "\n")
 
 
+def split_by_horizon(raw: list[dict], cutoff: datetime
+                     ) -> tuple[list[Article], list[dict]]:
+    """Split the persisted inbox into (still inside the horizon, expired).
+
+    Expired entries come back as the raw dicts so the archive keeps them
+    byte-for-byte. Entries that don't parse are dropped from both lists.
+    """
+    kept: list[Article] = []
+    expired: list[dict] = []
+    for art in raw:
+        try:
+            a = Article(**art)
+            pub_dt = datetime.fromisoformat(a.published)
+        except (TypeError, ValueError):
+            continue
+        if pub_dt >= cutoff:
+            kept.append(a)
+        else:
+            expired.append(art)
+    return kept, expired
+
+
 # ───────────────────────── Main ─────────────────────────
 
 def main() -> int:
@@ -259,15 +281,13 @@ def main() -> int:
     per_source: dict[str, SourceStats] = {}
 
     # 1. Carry over existing inbox so we don't lose articles between runs.
-    for art in load_inbox(inbox_path):
-        try:
-            a = Article(**art)
-        except TypeError:
-            continue
-        pub_dt = datetime.fromisoformat(a.published)
-        if pub_dt >= cutoff:
-            by_url[a.url] = a
-            by_title.setdefault(a.title_key, a)
+    #    Whatever fell past the horizon since the last run goes to the archive
+    #    (until 05.09.2026 this was checked AFTER the inbox had already been
+    #    filtered and rewritten, so archive.jsonl was never written).
+    carried, expired = split_by_horizon(load_inbox(inbox_path), cutoff)
+    for a in carried:
+        by_url[a.url] = a
+        by_title.setdefault(a.title_key, a)
 
     # 2. Fetch fresh articles from each source.
     for name, url in sources:
@@ -312,6 +332,11 @@ def main() -> int:
         "counts_by_source": counts,
         "articles": [asdict(a) for a in articles],
     }
+    # Archive BEFORE rewriting the inbox: if the run dies between the two
+    # writes the expired articles are still in the inbox and get archived
+    # again next run (duplicate lines, deduped by id on read). The reverse
+    # order would lose them.
+    append_archive(archive_path, expired)
     write_atomic(inbox_path, payload)
 
     # Persist the fetch error report separately so the MCP / prompt can read it.
@@ -336,17 +361,6 @@ def main() -> int:
             },
         },
     )
-
-    # 4. Roll out anything older than horizon to archive.
-    expired: list[dict] = []
-    for art_dict in load_inbox(inbox_path):  # re-read so we work on persisted data
-        try:
-            pub_dt = datetime.fromisoformat(art_dict["published"])
-        except (KeyError, ValueError):
-            continue
-        if pub_dt < cutoff:
-            expired.append(art_dict)
-    append_archive(archive_path, expired)
 
     log(f"Wrote {len(articles)} articles · {len(errors)} errors · "
         f"archived {len(expired)}")
