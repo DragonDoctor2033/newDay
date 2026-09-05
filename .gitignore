@@ -1,0 +1,48 @@
+# --- secrets ---
+config.json
+config.*.json
+!config.example.json
+cloudflared.yml
+.feedback_bot_id
+.feedback_discussion_id
+.feedback_last_review_ts
+.feedback_last_update_id
+.claude/settings.local.json
+
+# --- python ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- binaries ---
+bin/
+*.exe
+
+# --- runtime data / state ---
+state.json
+state*.json
+inbox.json
+clusters.json
+digest_clusters.json
+digest_clusters_snapshot.json
+digest_run_cache.json
+fetch_errors.json
+feedback_log.json
+cache/
+logs/
+
+# --- backups & scratch ---
+*.bak
+*.bak?
+*.bak-*
+*.before_test.*
+_*.txt
+_*.json
+_tmp_*.py
+build_patch*.py
+digest_patch.json
+digest_html.txt
+digest_titles.json
+baltic_titles.json
+state_patch_*.json
+experiments/*.npz

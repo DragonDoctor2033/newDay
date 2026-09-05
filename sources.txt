@@ -1,0 +1,59 @@
+# Format: <name> | <url>
+# Lines starting with # are ignored.
+# Empty lines ignored.
+
+# === World / Western anglo ===
+BBC World        | http://feeds.bbci.co.uk/news/world/rss.xml
+Guardian World   | https://www.theguardian.com/world/rss
+NYT World        | https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+Al Jazeera       | https://www.aljazeera.com/xml/rss/all.xml
+
+# === Tech / IT / AI ===
+TechCrunch       | https://techcrunch.com/feed/
+Hacker News      | https://hnrss.org/frontpage?points=150
+Ars Technica     | https://feeds.arstechnica.com/arstechnica/index
+The Verge        | https://www.theverge.com/rss/index.xml
+
+# === Russian-language ===
+Meduza           | https://meduza.io/rss2/all
+RIA              | https://ria.ru/export/rss2/index.xml
+TASS             | https://tass.ru/rss/all.xml
+
+# === Estonian / Baltic ===
+ERR News         | https://news.err.ee/rss
+ERR rus          | https://rus.err.ee/rss
+ERR est 		 | https://www.err.ee/rss
+Postimees EN     | https://news.postimees.ee/rss
+Postimees RU     | https://rus.postimees.ee/rss
+Postimees EE     | https://www.postimees.ee/rss
+The Baltic Times | https://www.baltictimes.com/rss/
+
+# === European ===
+DW English       | https://rss.dw.com/rdf/rss-en-world
+France24         | https://www.france24.com/en/rss
+
+# === Ukraina ===
+Pravda RU  		 | https://www.pravda.com.ua/rus/rss/
+Pravda UA  		 | https://www.pravda.com.ua/rss/
+# Unian EN feed abandoned — last entry dated May 2024. Coverage via Unian RU.
+Unian RU   		 | https://rss.unian.net/site/news_rus.rss
+
+# === Hong Kong SAR China ===
+hongkongnews.net | http://feeds.hongkongnews.net/rss/b82693edf38ebff8
+HK HKFP 		 | https://www.hongkongfp.com/feed/
+
+# === China state / China coverage ===
+CGTN World       | https://www.cgtn.com/subscribe/rss/section/world.xml
+SCMP China       | https://www.scmp.com/rss/4/feed
+
+# === Middle East beyond AJ ===
+Times of Israel  | https://www.timesofisrael.com/feed/
+Anadolu World    | https://www.aa.com.tr/en/rss/default?cat=world
+
+# === India ===
+Hindu Intl       | https://www.thehindu.com/news/international/feeder/default.rss
+
+# === Markets / Finance ===
+MarketWatch      | https://feeds.content.dowjones.io/public/rss/mw_topstories
+CNBC Markets     | https://www.cnbc.com/id/15839135/device/rss/rss.html
+FT               | https://www.ft.com/rss/home

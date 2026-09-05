@@ -1,0 +1,20 @@
+{
+  "tg_bot_token": "REPLACE_ME",
+  "telegraph_token": "REPLACE_ME",
+  "tg_chat_id": "-100XXXXXXXXXX",
+  "tg_log_chat_id": "-100XXXXXXXXXX",
+  "tg_test_chat_id": "-100XXXXXXXXXX",
+  "mcp_bearer_token": "REPLACE_ME",
+  "test_mode": false,
+  "user_location": "Tallinn, Estonia",
+  "user_concerns": [
+    "Russia / Belarus / Ukraine / NATO escalation",
+    "Estonia and Baltic states",
+    "Critical infrastructure failures (power, banking, comms, transport) in Estonia or EU",
+    "Major terror attacks, mass casualty events",
+    "Natural / technogenic disasters with large impact",
+    "Major economic shocks (market crashes, defaults, currency crises)",
+    "Declarations of war, withdrawals from major treaties, massive sanctions"
+  ],
+  "doh_resolver_url": ""
+}

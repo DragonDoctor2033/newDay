@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "news-agent": {
+      "command": "D:\\newDay\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\newDay\\mcp_server.py"],
+      "env": {
+        "NEWS_ROOT": "D:\\newDay",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

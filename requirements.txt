@@ -1,0 +1,11 @@
+feedparser>=6.0.10
+requests>=2.31.0
+fastmcp>=0.2.0
+beautifulsoup4>=4.12.0
+dnspython>=2.4.0
+telegraph>=2.2.0
+# clusterer.py — CPU-only torch is intentional (gaming GPU stays free):
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+torch>=2.0
+sentence-transformers>=3.0
+numpy>=1.26
