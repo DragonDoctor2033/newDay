@@ -13,7 +13,7 @@ D:\newDay\
 ├── inbox.json           ← fetcher пишет, MCP читает
 ├── clusters.json        ← clusterer пишет, MCP читает (событийные кластеры)
 ├── state.json           ← MCP читает/пишет атомарно
-├── archive.jsonl        ← новости старше 72 часов
+├── archive.jsonl        ← новости старше 72 часов (fetcher дописывает, search_news/cite читают)
 ├── fetch_errors.json    ← последний отчёт фетчера
 ├── fetcher.py           ← парсер RSS
 ├── doh.py               ← DNS-over-HTTPS шим для fetcher (опционально)
@@ -31,7 +31,6 @@ D:\newDay\
 │   ├── run-mcp-http.ps1           ← MCP-сервер по HTTP, с логона, в цикле
 │   ├── run-tunnel.ps1             ← cloudflared-туннель к нему, с логона, в цикле
 │   ├── run-feedback-collector.ps1 ← каждые 15 мин, без LLM
-│   ├── run-digest.ps1             ← заглушка: дайджест переехал в задачу CC-Desktop
 │   └── sync-digest-skill.py       ← собирает SKILL.md задачи дайджеста из prompts/digest.md
 ├── experiments\         ← лаборатория кластеризации (cluster_lab.py)
 ├── cache\               ← кеш read_full + embeddings.npz
@@ -125,10 +124,8 @@ cd D:\newDay
 
 ## 6. Тестовый прогон digest
 
-Дайджест живёт не в Task Scheduler, а в задаче Claude Desktop (см. §7);
-`scripts\run-digest.ps1` — заглушка, которая только пишет строку в
-`logs\digest-migrated.log`. Тестовый прогон — кнопка «Run now» у задачи
-в Code-табе → Routines.
+Дайджест живёт не в Task Scheduler, а в задаче Claude Desktop (см. §7).
+Тестовый прогон — кнопка «Run now» у задачи в Code-табе → Routines.
 
 Что должно произойти (пайплайн с 02.09.2026 — механика на сервере):
 - digest_context + digest_baltic_extra → карта суток по кластерам,
@@ -156,7 +153,14 @@ cd D:\newDay
   памяти проекта и в git-истории. Заголовки «ШАГ N» — стабильные
   перекрёстные ссылки, не перенумеровывать
 Старые тулы (list_news, publish_telegraph, update_state, …) остались как
-fallback. Серверные тесты: `.venv/Scripts/python.exe scripts/test_digest_tools.py`.
+fallback. Для разовых вопросов вне прогонов есть `search_news(query, lang,
+since_iso)` — полнотекстовый поиск по inbox и archive.jsonl (все термины
+подстрокой, `lang` — языковая зона источника en/ru/et/uk); id из архива
+работают в cite/read_full. В промпты watchman/digest он намеренно не добавлен:
+им хватает контекстных тулов, а лишний ход дороже модели.
+
+Серверные тесты: `.venv/Scripts/python.exe scripts/test_digest_tools.py`,
+`test_watchman_reader_tools.py`, `test_search_news.py`, `test_fetcher_archive.py`.
 
 Открой Telegraph-ссылку — проверь:
 - TOC сверху
@@ -165,10 +169,10 @@ fallback. Серверные тесты: `.venv/Scripts/python.exe scripts/test_
 
 ## 7. Регистрация задач
 
-Актуально на 05.09.2026. Всего шесть задач в Task Scheduler и одна в Claude
+Актуально на 05.09.2026. Пять задач в Task Scheduler и одна в Claude
 Desktop; ниже — что реально зарегистрировано, а не «как задумывалось».
 
-### Task Scheduler (пять рабочих задач + заглушка)
+### Task Scheduler
 
 Общее для всех: пользователь `docto`, «Run whether user is logged on or
 not» (хранится пароль), **обычные** права (не highest), «If the task is
@@ -183,7 +187,6 @@ already running → Do not start a new instance». Ни у одной нет а�
 | `Claude News MCP HTTP` | при логоне | `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File D:\newDay\scripts\run-mcp-http.ps1` | `mcp_server.py --http` на 127.0.0.1:8787 с bearer-токеном; цикл перезапускает через 10 с после падения; лимит времени снят (PT0S) |
 | `Claude News Tunnel` | при логоне | `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File D:\newDay\scripts\run-tunnel.ps1` | `bin\cloudflared.exe tunnel run news-mcp` по `cloudflared.yml`; тот же цикл; лимит снят |
 | `newsday-feedback-collector` | каждые 15 мин, с 18:08 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\newDay\scripts\run-feedback-collector.ps1` | `feedback_collector.py`: реплаи из группы обсуждений → `feedback_log.json`; без LLM; лимит 72 ч |
-| `Claude Daily Digest` | ежедневно 09:00 | `powershell.exe -file "D:\newDay\scripts\run-digest.ps1"` | **заглушка**, скрипт сразу выходит с записью в `logs\digest-migrated.log`; удалить из консоли администратора: `schtasks /Delete /TN "Claude Daily Digest" /F` (из обычной сессии — Access is denied) |
 
 Проверить всё разом:
 
@@ -195,7 +198,8 @@ Get-ScheduledTask | Where-Object { $_.TaskName -match 'Claude|newsday' } |
 ```
 
 Result `0` — нормальный выход, `267009` (0x41301) — «ещё выполняется», для
-двух серверных задач это штатное состояние.
+двух серверных задач это штатное состояние. Менять задачи из обычной сессии
+нельзя (Access is denied) — только из консоли администратора.
 
 Рестарт MCP-сервера после правки `mcp_server.py` (туннель трогать не нужно):
 
@@ -294,6 +298,8 @@ permissionMode `auto`, и его прогоны видны в списке се�
 - Тех.отчёт fetcher: `D:\newDay\fetch_errors.json` — последний прогон
 - Состояние: `D:\newDay\state.json` — можно глазами посмотреть что watchman помнит
 - Inbox: `D:\newDay\inbox.json` — посмотреть что fetcher собрал
+- Архив: `D:\newDay\archive.jsonl` — всё, что вышло за 72 часа (с 05.09.2026;
+  раньше терялось), ~2 МБ/сутки, ротации нет
 
 ## Стоимость
 
@@ -317,4 +323,3 @@ usage из транскриптов сессий (~/.claude/projects/D--newDay/*
 ## Что улучшить позже
 
 - Добавить парсинг HTML-источников без RSS (через BeautifulSoup в fetcher.py)
-- Добавить tool `search_news(query, lang)` в MCP — поиск по inbox+archive

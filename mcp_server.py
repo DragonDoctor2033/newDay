@@ -77,6 +77,60 @@ def _index_inbox() -> dict[str, dict]:
     return {a["id"]: a for a in _load_inbox().get("articles", [])}
 
 
+ARCHIVE_PATH = ROOT / "archive.jsonl"
+
+
+def _iter_archive():
+    """Yield archived articles, oldest first.
+
+    The fetcher appends inbox items that fell past its 72h horizon to
+    archive.jsonl, one JSON object per line (since 05.09.2026). A run that
+    died between the archive append and the inbox rewrite archives the same
+    items again, so lines are deduped by id here; unparsable lines are skipped.
+    """
+    if not ARCHIVE_PATH.exists():
+        return
+    seen: set[str] = set()
+    with ARCHIVE_PATH.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                a = json.loads(line)
+            except ValueError:
+                continue
+            aid = a.get("id") if isinstance(a, dict) else None
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            yield a
+
+
+def _find_archived(article_ids) -> dict[str, dict]:
+    wanted = set(article_ids)
+    found: dict[str, dict] = {}
+    if not wanted:
+        return found
+    for a in _iter_archive():
+        if a["id"] in wanted:
+            found[a["id"]] = a
+            if len(found) == len(wanted):
+                break
+    return found
+
+
+def _lookup_articles(article_ids) -> dict[str, dict]:
+    """Inbox first, archive for whatever is left — so ids that search_news()
+    returned from the archive stay usable in cite() and read_full()."""
+    inbox = _index_inbox()
+    found = {aid: inbox[aid] for aid in article_ids if aid in inbox}
+    missing = [aid for aid in article_ids if aid not in found]
+    if missing:
+        found.update(_find_archived(missing))
+    return found
+
+
 def _load_config() -> dict[str, Any]:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
@@ -205,6 +259,96 @@ def list_news(
         "next_before_iso": page[-1]["published"] if truncated else None,
         "total_in_inbox": len(all_articles),
         "articles": [{k: a[k] for k in fields} for a in page],
+    }
+
+
+try:
+    from clusterer import SOURCE_LANG   # language zone per source; clusterer
+except Exception:                        # imports only numpy at module level
+    SOURCE_LANG = {}
+
+
+@mcp.tool()
+def search_news(
+    query: str,
+    lang: str | None = None,
+    since_iso: str | None = None,
+    source_filter: str | None = None,
+    include_archive: bool = True,
+    limit: int = 50,
+    compact: bool = False,
+) -> dict:
+    """
+    Full-text search over the inbox (last 72h) and, by default, archive.jsonl
+    (everything the fetcher rolled out of the inbox since 05.09.2026).
+    Newest first.
+
+    Not for the scheduled watchman/digest runs — they get their material from
+    watchman_context / digest_context. This is for ad-hoc questions
+    («что было про Нарву на прошлой неделе»).
+
+    Args:
+        query: space-separated terms; ALL must occur in title+summary
+            (case-insensitive substring after «»/ё normalisation). Substring
+            match makes a stem work as a prefix: «нарв» finds Нарва / Нарве /
+            нарвский; «narva bridge» needs both words somewhere in the text.
+        lang: language zone of the SOURCE, not detected from the text:
+            en / ru / et / uk (SOURCE_LANG in clusterer.py).
+        since_iso: only `published >= since_iso` (UTC ISO).
+        source_filter: case-insensitive substring on the source name.
+        include_archive: also scan archive.jsonl. It grows ~2 MB/day and is
+            read in full — fine for months, slow after years.
+        limit: max articles returned.
+        compact: drop `summary` from each item.
+
+    Returns:
+        count / window_total / truncated — as in list_news
+        inbox_hits / archive_hits        — where the matches came from
+        articles                         — id/source/title/published/where
+                                           (+summary unless compact)
+    Archive ids resolve in cite() and read_full() like inbox ids.
+    """
+    terms = [t for t in _norm(query).split() if t]
+    if not terms:
+        return {"error": "empty query"}
+    if lang and not SOURCE_LANG:
+        return {"error": "lang filter unavailable: clusterer.SOURCE_LANG not importable"}
+    sf = source_filter.lower() if source_filter else None
+
+    def matches(a: dict) -> bool:
+        if since_iso and a.get("published", "") < since_iso:
+            return False
+        if sf and sf not in a.get("source", "").lower():
+            return False
+        if lang and SOURCE_LANG.get(a.get("source")) != lang:
+            return False
+        hay = _norm(f'{a.get("title", "")} {a.get("summary", "")}')
+        return all(t in hay for t in terms)
+
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for a in _load_inbox().get("articles", []):
+        if matches(a):
+            hits.append({**a, "where": "inbox"})
+            seen.add(a["id"])
+    inbox_hits = len(hits)
+    if include_archive:
+        for a in _iter_archive():
+            if a["id"] not in seen and matches(a):
+                hits.append({**a, "where": "archive"})
+    hits.sort(key=lambda a: a["published"], reverse=True)
+
+    page = hits[:limit]
+    fields = ("id", "source", "title", "published", "where")
+    if not compact:
+        fields += ("summary",)
+    return {
+        "count": len(page),
+        "window_total": len(hits),
+        "truncated": len(hits) > len(page),
+        "inbox_hits": inbox_hits,
+        "archive_hits": len(hits) - inbox_hits,
+        "articles": [{k: a.get(k) for k in fields} for a in page],
     }
 
 
@@ -393,8 +537,7 @@ def _article_text(article_id: str, *, allow_fetch: bool = True,
                   want_chars: int = READ_FULL_DEFAULT_CHARS) -> tuple[str | None, bool, str | None]:
     """(text, from_cache, error). Re-fetches a legacy 8000-char cache entry
     when the caller wants more than that."""
-    inbox = _index_inbox()
-    art = inbox.get(article_id)
+    art = _lookup_articles([article_id]).get(article_id)
     if not art:
         return None, False, f"unknown article id: {article_id}"
     cache_file = CACHE_DIR / f"{article_id}.txt"
@@ -455,13 +598,14 @@ def cite(article_ids: list[str], format: str = "html") -> dict:
                 'telegraph_ul' for <ul><li><a/></li></ul>.
 
     The model never writes URLs by hand — always go through cite().
+    Ids from search_news() that live in archive.jsonl resolve too.
     """
-    inbox = _index_inbox()
+    found = _lookup_articles(article_ids)
     items: list[dict] = []
     missing: list[str] = []
 
     for aid in article_ids:
-        art = inbox.get(aid)
+        art = found.get(aid)
         if not art:
             missing.append(aid)
             continue
