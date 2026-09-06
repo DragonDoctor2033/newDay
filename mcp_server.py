@@ -56,6 +56,8 @@ CACHE_DIR.mkdir(exist_ok=True)
 DIGEST_RUNS_KEEP_DAYS = 10
 
 PLACEHOLDER_RE = re.compile(r"\[\[(art_[0-9a-f]{8})\]\]")
+# Feeds that only aggregate other sites: link label = the article's domain.
+_AGGREGATOR_SOURCES = {"Hacker News"}
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -154,9 +156,19 @@ def _write_state(state: dict[str, Any]) -> None:
 
 
 def _resolve_placeholders(text: str, *, html: bool) -> tuple[str, list[str]]:
-    """Replace [[art_xxx]] placeholders with real links. Returns (text, missing_ids)."""
-    inbox = _index_inbox()
+    """Replace [[art_xxx]] placeholders with real links. Returns (text, missing_ids).
+    Looks in the inbox AND archive.jsonl: an article can leave the 72h
+    window while the digest is still being written (06.09.2026)."""
+    inbox = _lookup_articles(sorted(set(PLACEHOLDER_RE.findall(text))))
     missing: list[str] = []
+
+    def label_for(art: dict) -> str:
+        src = art.get("source") or "?"
+        if src in _AGGREGATOR_SOURCES:
+            m = re.match(r"https?://(?:www\.)?([^/]+)", art.get("url") or "")
+            if m:
+                return m.group(1)
+        return src
 
     def repl(m: re.Match) -> str:
         art_id = m.group(1)
@@ -165,8 +177,8 @@ def _resolve_placeholders(text: str, *, html: bool) -> tuple[str, list[str]]:
             missing.append(art_id)
             return f"[?{art_id}]"
         if html:
-            return f'<a href="{art["url"]}">{art["source"]}</a>'
-        return f'[{art["source"]}]({art["url"]})'
+            return f'<a href="{art["url"]}">{label_for(art)}</a>'
+        return f'[{label_for(art)}]({art["url"]})'
 
     return PLACEHOLDER_RE.sub(repl, text), missing
 
@@ -489,7 +501,7 @@ def get_cluster(cluster_id: str) -> dict:
         return {"error": f"unknown cluster id: {cluster_id} — not in the live "
                          "map, not a member of any live cluster, not in the "
                          "digest snapshot"}
-    inbox = _index_inbox()
+    inbox = _lookup_articles(cluster.get("article_ids", []))   # inbox + archive
     articles, expired = [], []
     for aid in cluster.get("article_ids", []):
         art = inbox.get(aid)
@@ -1264,6 +1276,8 @@ _INDEX_LEGEND = (
 _CLUSTER_LEGEND = (
     "id o=<независимых редакций> n=<статей> <языки> [S:<storyline_id>] "
     "[B=есть балтийская редакция ERR/Postimees/Baltic Times] "
+    "[old=<статей старше окна>/<всего> — почти всё (>=80%) старше суток: "
+    "продолжающаяся тема без нового события] "
     "[↻slug = детерминированный повтор темы из anti_repeat.index (общие "
     "article_ids/cluster_ids); ~slug = тот же повтор в кластере-близнеце на другом языке] | "
     "<заголовок> | s:<sample_ids через запятую — цитируй из них> "
@@ -1334,6 +1348,8 @@ def _build_anti_repeat_index(runs: list[dict]) -> dict[str, dict]:
             e["depth_last"] = t.get("depth")
             e["live_event"] = bool(t.get("live_event"))
             e["last_substantive_update"] = t.get("last_substantive_update")
+            if t.get("printed_text"):
+                e["printed_text"] = t["printed_text"]
             e["article_ids"] |= set(t.get("article_ids") or [])
             e["cluster_ids"] |= set(t.get("cluster_ids") or [])
     for e in index.values():
@@ -1387,12 +1403,41 @@ def _match_repeats(clusters: list[dict], index: dict[str, dict]
     return direct, related
 
 
-def _cluster_line(c: dict, direct: dict, related: dict, *, full: bool) -> str:
+PREV_TEXT_SLUGS = 12
+PREV_TEXT_CHARS = 350
+
+
+def _prev_text(index: dict, direct: dict, related: dict) -> dict[str, str]:
+    """What was printed last time for the topics that repeat today —
+    direct (↻) matches first, then twins (~); capped so digest_context
+    stays under the client's tool-result size limit."""
+    order: list[str] = []
+    for hits in list(direct.values()) + list(related.values()):
+        for slug in sorted(hits):
+            if slug not in order:
+                order.append(slug)
+    out: dict[str, str] = {}
+    for slug in order:
+        txt = (index.get(slug) or {}).get("printed_text")
+        if txt:
+            out[slug] = txt[:PREV_TEXT_CHARS]
+        if len(out) >= PREV_TEXT_SLUGS:
+            break
+    return out
+
+
+def _cluster_line(c: dict, direct: dict, related: dict, *, full: bool,
+                  in_window: set[str] | None = None) -> str:
     flags = []
     if c.get("storyline_id"):
         flags.append(f"S:{c['storyline_id']}")
     if _has_baltic_outlet(c):
         flags.append("B")
+    if in_window is not None:
+        ids = c.get("article_ids") or []
+        old = sum(1 for a in ids if a not in in_window)
+        if ids and old * 5 >= len(ids) * 4:   # >=80% older than the window: stale story
+            flags.append(f"old={old}/{len(ids)}")
     if c["id"] in direct:
         flags.append("↻" + ",".join(sorted(direct[c["id"]])))
     elif c["id"] in related:
@@ -1488,6 +1533,7 @@ def digest_context(hours: int = 24, top: int = 120) -> dict:
 
     articles = _load_inbox().get("articles", [])
     in_window = [a for a in articles if str(a.get("published", ""))[:19] >= since_cmp]
+    in_window_ids = {a["id"] for a in in_window}
 
     top_clusters = clusters[:top]
     extra_total = len(_baltic_extra_clusters(clusters, top))
@@ -1587,7 +1633,8 @@ def digest_context(hours: int = 24, top: int = 120) -> dict:
         "legend": _CLUSTER_LEGEND,
         "top_clusters_count": len(top_clusters),
         "top_clusters": "\n".join(
-            _cluster_line(c, direct, related, full=True) for c in top_clusters),
+            _cluster_line(c, direct, related, full=True, in_window=in_window_ids)
+            for c in top_clusters),
         "baltic_extra_total": extra_total,
         "anti_repeat": {
             "window_hours": ANTI_REPEAT_HOURS,
@@ -1596,6 +1643,10 @@ def digest_context(hours: int = 24, top: int = 120) -> dict:
             "clusters_direct": len(direct),
             "clusters_related": len(related),
             "index_legend": _INDEX_LEGEND,
+            "prev_text_legend": ("что было НАПЕЧАТАНО в прошлый раз по темам, совпавшим с "
+                                 "кластерами суток (↻/~): режим A только если новые факты "
+                                 "не содержатся здесь; ≥2 ключевых факта уже тут → B/C"),
+            "prev_text": _prev_text(index, direct, related),
             "index": "\n".join(index_lines),
         },
         "alerted_24h": alerted,
@@ -1848,9 +1899,18 @@ def publish_digest(
         channel_msg_id = sent["results"][0]["result"]["message_id"]
     except (KeyError, IndexError, TypeError):
         pass
+    printed_items = []
+    for item in [*baltic, *world, *tech, *(baltic_followups or []),
+                 *(world_followups or []), *(tech_followups or [])]:
+        body = item.get("essence") or item.get("text") or item.get("whats_new") or ""
+        printed_items.append({
+            "sources": list(item.get("sources") or []),
+            "text": f"{item.get('headline') or ''} — {body}"[:700],
+        })
     _save_run_cache({
         "page_url": page_url,
         "main_msg_id": channel_msg_id,
+        "published_items": printed_items,
         "published_at": _iso_z(datetime.now(timezone.utc)),
         "published_counts": {
             "baltic": len(baltic), "world": len(world), "tech": len(tech),
@@ -1864,6 +1924,7 @@ def publish_digest(
         "channel_msg_id": channel_msg_id,
         "main_post_ok": _tg_all_ok(sent),
         "missing_placeholders": published.get("missing_placeholders", []),
+        "unresolved_stripped": sorted(set(unresolved)),
         "html_chars": len(html),
     }
     if not out["main_post_ok"]:
@@ -1984,8 +2045,7 @@ def _number_found(value: str, hay: str) -> bool:
 def _haystack(article_id: str, cache: dict[str, str | None]) -> str | None:
     if article_id in cache:
         return cache[article_id]
-    inbox = _index_inbox()
-    art = inbox.get(article_id)
+    art = _lookup_articles([article_id]).get(article_id)   # inbox + archive
     if not art:
         cache[article_id] = None
         return None
@@ -2183,18 +2243,31 @@ def reader_packet(
     twins: list[dict] = []
     twins_missing: list[str] = []
     READER_MAX_TWINS = 5
-    twins_ignored = list(twin_ids or [])[READER_MAX_TWINS:]
+    twins_ignored = [{"id": t, "reason": "over limit"}
+                     for t in list(twin_ids or [])[READER_MAX_TWINS:]]
+    related_of_main = set(cluster.get("related_ids") or [])
     for t in (twin_ids or [])[:READER_MAX_TWINS]:
         c, _how = _find_cluster(t, data)
         if c is None:
             twins_missing.append(t)
-        elif c is not cluster and c.get("id") != cluster.get("id") and c not in twins:
-            twins.append(c)
+            continue
+        if c is cluster or c.get("id") == cluster.get("id") or c in twins:
+            continue
+        # A twin is the SAME event in another language: the clusterer links
+        # those through related_ids. Anything else the model passes (a
+        # reaction, an investigation, a neighbouring story) would turn the
+        # packet into a composite event (06.09.2026 review) — skip it.
+        if (c.get("id") not in related_of_main
+                and cluster.get("id") not in set(c.get("related_ids") or [])):
+            twins_ignored.append({"id": t, "reason": "not a related twin of the main cluster"})
+            continue
+        twins.append(c)
     merged_ids: list[str] = []
     for c in [cluster, *twins]:
         for aid in c.get("article_ids") or []:
             if aid not in merged_ids:
                 merged_ids.append(aid)
+    inbox = _lookup_articles(merged_ids)   # inbox + archive: mid-run expiry
     articles = [inbox[a] for a in merged_ids if a in inbox]
     expired = [a for a in merged_ids if a not in inbox]
 
@@ -2321,12 +2394,22 @@ def _record_digest_run(
             "last_substantive_update": t.get("last_substantive_update"),
             "live_event": bool(t.get("live_event")),
         }
+        # What was actually printed for this topic (anti-repeat memory):
+        # match the published item by shared sources / cluster ids.
+        want = set(rec["article_ids"]) | set(rec["cluster_ids"])
+        for item in cache.get("published_items") or []:
+            if want & set(item.get("sources") or []):
+                rec["printed_text"] = item["text"]
+                break
         new_topics.append(rec)
 
     def count(section: str, depth: str) -> int:
         return sum(1 for t in new_topics if t["section"] == section and t["depth"] == depth)
 
     stats = cache.get("stats") or {}
+    if bad := cache.get("unresolved_placeholders"):
+        notes = (notes + " | " if notes else "") + \
+            f"сервер вырезал нерезолвящиеся плейсхолдеры: {', '.join(bad)}"
     run = {
         "ts": ts,
         "run": "digest",
