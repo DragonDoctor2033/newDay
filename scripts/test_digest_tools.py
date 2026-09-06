@@ -186,7 +186,7 @@ dry = publish_digest(baltic=baltic, world=world, tech=tech, baltic_followups=fu,
 html = dry["html"]
 check(dry["title"].startswith("Дайджест "), "default title")
 check("Обработано 9 статей в 5 событиях · " in html, "header stats from run cache")
-check("За сутки было 1 срочных алертов:</b> fresh alert." in html, "alert line rendered")
+check("За сутки был 1 срочный алерт:</b> fresh alert." in html, "alert line rendered (singular form)")
 check('<h3 id="Baltic">' in html and '<h3 id="World">' in html and '<h3 id="Tech">' in html, "three anchored sections")
 check("<li>Local &lt;story&gt;</li>" in html and "<li>World short</li>" in html and "<li>Tech</li>" in html,
       "TOC uses toc, falls back to headline")
