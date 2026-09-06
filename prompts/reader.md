@@ -101,6 +101,8 @@ Bash, Read и другие инструменты не нужны: скрипт�
            ```json
            {"cluster_id": ...}
            ```
+   ПЛОХО:  Nothing dropped this time. Returning the final card.
+           {"cluster_id": ...}
    ХОРОШО: {"cluster_id": ...}
    Если reader_packet вернул error — тот же формат: пустая карта с
    "notes": "packet failed: <текст ошибки>", начиная с {.
